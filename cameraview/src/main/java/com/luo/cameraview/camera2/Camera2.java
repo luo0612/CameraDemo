@@ -159,15 +159,18 @@ public class Camera2 extends BaseCameraViewImpl {
     private final CameraCaptureSession.StateCallback mCameraCaptureSessionCallback = new CameraCaptureSession.StateCallback() {
         @Override
         public void onConfigured(@NonNull CameraCaptureSession session) {
+            //  This method is called when the camera device has finished configuring itself, and the
+            //  session can start processing capture requests.
             if (mCamera == null) {
                 return;
             }
 
             mCaptureSession = session;
-            updateAutoFocus();
-            updateFlash();
+            updateAutoFocus();//更新自动对焦
+            updateFlash();//更新闪光模式
 
             try {
+                //进行预览
                 mCaptureSession.setRepeatingRequest(
                         mPreviewRequestBuilder.build(), mPictureCaptureCallback, null);
             } catch (CameraAccessException e) {
@@ -184,7 +187,7 @@ public class Camera2 extends BaseCameraViewImpl {
         @Override
         public void onClosed(@NonNull CameraCaptureSession session) {
             super.onClosed(session);
-            if (mCaptureSession != null && mCaptureSession == session) {
+            if (mCaptureSession != null && mCaptureSession.equals(session)) {
                 mCaptureSession = null;
             }
         }
@@ -193,6 +196,7 @@ public class Camera2 extends BaseCameraViewImpl {
     PictureCaptureCallback mPictureCaptureCallback = new Camera2.PictureCaptureCallback() {
         @Override
         public void onPrecaptureRequired() {
+            //trigger:触发
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
             setState(STATE_PRECAPTURE);
             try {
@@ -205,6 +209,7 @@ public class Camera2 extends BaseCameraViewImpl {
 
         @Override
         public void onReady() {
+            //捕获静态图片
             captureStillPicture();
         }
     };
@@ -250,11 +255,15 @@ public class Camera2 extends BaseCameraViewImpl {
     private void captureStillPicture() {
         try {
             CaptureRequest.Builder captureRequestBuilder = mCamera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            //Add a surface to the list of targets for this request
             captureRequestBuilder.addTarget(mImageReader.getSurface());
+            //AF:auto focus 自动聚焦
             captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, mPreviewRequestBuilder.get(CaptureRequest.CONTROL_AF_MODE));
             switch (mFlash) {
                 case Constants.FLASH_OFF:
+                    //AE:auto exposure 自动曝光
                     captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                    //FLASH_MODE:闪光模式
                     captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
                     break;
                 case Constants.FLASH_ON:
@@ -262,7 +271,7 @@ public class Camera2 extends BaseCameraViewImpl {
                     break;
                 case Constants.FLASH_TORCH:
                     captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
+                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);//开启手电筒
                     break;
                 case Constants.FLASH_AUTO:
                     captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
@@ -274,7 +283,8 @@ public class Camera2 extends BaseCameraViewImpl {
             Integer sensorOrientation = mCameraCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
             captureRequestBuilder.set(CaptureRequest.JPEG_ORIENTATION, (sensorOrientation + mDisplayOrientation * (mFacing == Constants.FACING_FRONT ? 1 : -1)) % 360);
 
-            mCaptureSession.stopRepeating();
+            mCaptureSession.stopRepeating();//停止预览
+            //进行捕获图片
             mCaptureSession.capture(captureRequestBuilder.build(), new CameraCaptureSession.CaptureCallback() {
                 @Override
                 public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {

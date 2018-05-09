@@ -1,2 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.luo.cameraview" />
+    package="com.luo.cameraview" >
+
+    <uses-permission android:name="android.permission.CAMERA" />
+</manifest>

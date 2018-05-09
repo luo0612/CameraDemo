@@ -1,5 +1,6 @@
 package com.luo.cameraview.camera2;
 
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.ImageFormat;
@@ -31,6 +32,26 @@ import java.util.Arrays;
 import java.util.Set;
 import java.util.SortedSet;
 
+/**
+ * 拍照流程:
+ * 1.用CameraManager的openCamera(String cameraId,CameraDevice.StateCallback callback,Handler handler)
+ * 方法打开指定摄像头.
+ * 该方法的第一个参数代表要打开的摄像头ID, 第二个参数用于监听摄像头的状态, 第三个参数代表执行callback的Handler,
+ * 如果希望程序直接在当前相册中执行callback, 则可将Handler参数设为null
+ * 2.当摄像头打开之后, 程序即可获取CameraDevice
+ * 即根据摄像头的ID获取指定摄像头设备, 然后调用CameraDevice的
+ * createCaptureSession(List<Surface> outputs,CameraCaptureSession.StateCallback callback, Handler handler)
+ * 方法来创建CameraCaptureSession.
+ * 该方法的第一个参数是一个List集合, 封装了所有需要从改摄像头获取图片的Surface,
+ * 第二个参数用于监听CameraCaptureSession的创建过程,
+ * 第三个参数代表执行callback的Handler, 如果程序直接在当前线程中执行callback, 则将Handler参数设置为null
+ * 3.不管是预览还是拍照, 程序都调用CameraDevice的createCaptureRequest(int templateType)方法创建
+ * CaptureRequest.Builder, 该方法支持TEMPLATE_PREVIEW(预览), TEMPLATE_RECORD(拍摄视频),
+ * TEMPLATE_STILL_CAPTURE(拍照)等参数
+ * 4.通过上面第三步所调用方法返回的CaptureRequest.Builder设置拍照的各种参数, 比如对焦模式,曝光模式等
+ * 5.调用CaptureRequest.Builder的build()方法即可拿到CaptureRequest对象,
+ * 接下来程序通过CameraCaptureSession的setRepeatingRequest()方法开始预览, 或调用capture()方法进行拍照
+ */
 @TargetApi(21)
 public class Camera2 extends BaseCameraViewImpl {
 
@@ -38,6 +59,9 @@ public class Camera2 extends BaseCameraViewImpl {
 
     private static final SparseIntArray INTERNAL_FACINGS = new SparseIntArray();
 
+    /**
+     * 保存前置摄像头和后置摄像头的特性
+     */
     static {
         INTERNAL_FACINGS.put(Constants.FACING_BACK, CameraCharacteristics.LENS_FACING_BACK);
         INTERNAL_FACINGS.put(Constants.FACING_FRONT, CameraCharacteristics.LENS_FACING_FRONT);
@@ -53,12 +77,47 @@ public class Camera2 extends BaseCameraViewImpl {
      */
     private static final int MAX_PREVIEW_HEIGHT = 1080;
 
+    /**
+     * 摄像头管理器.<br>
+     * 是全新的系统管理器, 专门用于检测系统摄像头, 打开系统摄像头<br>
+     * 通过调用CameraManager的getCameraCharacteristics(String cameraId)方法,
+     * 即可获取指定摄像头的相关特性
+     */
     private final CameraManager mCameraManager;
 
     private String mCameraId;
+    /**
+     * 摄像头特性.
+     * 该对象通过CameraManager获取, 用于描述特定摄像头所支持的各种特性.
+     * 类似原来的CameraInfo
+     */
     private CameraCharacteristics mCameraCharacteristics;
+    /**
+     * 代表系统摄像头.
+     * 类似原来的Camera.
+     * 每个CameraDevice自己会负责建立CameraCaptureSession以及建立CaptureRequest
+     */
     private CameraDevice mCamera;
+    /**
+     * 该类是非常重要的API.
+     * 当程序需要预览,拍照时, 都需要先通过该类的实例创建Session.
+     * 不管预览还是拍照, 也都是由该对象的方法进行控制.
+     * 其中控制预览的方法为setRepeatingRequest();
+     * 控制拍照的方法为capture();
+     * <p>
+     * 为监听CameraCaptureSession的创建过程, 以及监听CameraCapture的拍照过程,
+     * Camera v2 API为CameraCaptureSession提供StateCallback和CaptureCallback等内部类
+     */
     private CameraCaptureSession mCaptureSession;
+    /**
+     * CameraRequest何CameraRequest.Builder:
+     * 当程序调用setRepeatingRequest()方法进行预览时,
+     * 或调用capture()方法进行拍照时,都需要传入CameraRequest参数.
+     * CameraRequest代表一次捕获请求, 用于描述捕获图片的各种参数设置.
+     * 比如对焦模式,曝光模式...等, 总之程序对照片所做的各种控制,
+     * 都是通过CameraRequest参数进行设置.
+     * CameraRequestBuilder则负责生成CameraRequest对象
+     */
     private CaptureRequest.Builder mPreviewRequestBuilder;
     private ImageReader mImageReader;
     private final SizeMap mPreviewSizes = new SizeMap();
@@ -72,27 +131,27 @@ public class Camera2 extends BaseCameraViewImpl {
     private final CameraDevice.StateCallback mCameraDeviceCallback = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
-            mCamera = camera;
-            mCallback.onCameraOpened();
-            startCaptureSession();
+            mCamera = camera;// 获取到摄像头设备
+            mCallback.onCameraOpened();//回调摄像头已经打开
+            startCaptureSession();//开始进行预览
         }
 
         @Override
         public void onClosed(@NonNull CameraDevice camera) {
             super.onClosed(camera);
-            mCallback.onCameraClosed();
+            mCallback.onCameraClosed();//回调摄像头关闭
 
         }
 
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
-            mCamera = null;
+            mCamera = null;//摄像头断开
         }
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
             Log.e(TAG, "onError " + camera.getId() + " (" + error + ")");
-            mCamera = null;
+            mCamera = null;//摄像头出错
         }
     };
 
@@ -153,12 +212,35 @@ public class Camera2 extends BaseCameraViewImpl {
     private final ImageReader.OnImageAvailableListener mOnImageAvailableListener = new ImageReader.OnImageAvailableListener() {
         @Override
         public void onImageAvailable(ImageReader reader) {
+            // java1.7特性，叫做try-with-resource，
+            // 实现了AutoCloseable接口的实例可以放在try(...)中在离开try块时将自动调用close()方法。
+            // 该方法调用可以看做在finally块中，所以资源的释放一定会执行，不过能不能成功释放还是得看close方法是否正常返回。
+            // 所有实现Closeable的类声明都可以写在里面,最常见于流操作,socket操作,新版的httpclient也可以;
+            // 需要注意的是,try()的括号中可以写多行声明,每个声明的变量类型都必须是Closeable的子类,用分号隔开
+            /*
+            try(
+                InputStream is = new FileInputStream("...");
+                OutputStream os = new FileOutputStream("...");
+            ){
+                //...
+            }catch (IOException e) {
+                //...
+            }
+             */
+            //从ImageReader的队列获取下一个图像
             try (Image image = reader.acquireNextImage()) {
+                //Image.getPlanes(): 获取图片的像素平面数组
+                //像素平面数组的数量是由图片格式决定的,
+                //如果图片的格式是{@link android.graphics.ImageFormat#PRIVATE PRIVATE},
+                //则获取的数据为空, 因为不能访问到图片的像素数据, 可以通过该方法校验图片格式
+                //此处就是用于校验图片格式
                 Image.Plane[] planes = image.getPlanes();
                 if (planes.length > 0) {
                     ByteBuffer buffer = planes[0].getBuffer();
+                    //ByteBuffer.remaining()，此方法最给力，返回剩余的可用长度，此长度为实际读取的数据长度，最大自然是底层数组的长度
                     byte[] data = new byte[buffer.remaining()];
                     buffer.get(data);
+                    //回调图片的数据
                     mCallback.onPictureTaken(data);
                 }
             }
@@ -219,6 +301,9 @@ public class Camera2 extends BaseCameraViewImpl {
         }
     }
 
+    /**
+     * 更新闪光模式
+     */
     private void updateFlash() {
         switch (mFlash) {
             case Constants.FLASH_OFF:
@@ -244,6 +329,9 @@ public class Camera2 extends BaseCameraViewImpl {
         }
     }
 
+    /**
+     * 更新自动对焦
+     */
     private void updateAutoFocus() {
         if (mAutoFocus) {
             int[] modes = mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
@@ -260,6 +348,9 @@ public class Camera2 extends BaseCameraViewImpl {
     }
 
 
+    /**
+     * 开始进行预览
+     */
     private void startCaptureSession() {
         if (!isCameraOpened() || !mCameraPreview.isReady() || mImageReader == null) {
             return;
@@ -312,24 +403,53 @@ public class Camera2 extends BaseCameraViewImpl {
 
     @Override
     public boolean start() {
+        //选择摄像头
         if (!chooseCameraIdByFacing()) {
             return false;
         }
+        //收集摄像头信息
         collectCameraInfo();
+        //准备ImageReader
         prepareImageReader();
+        //开启摄像头
         startOpeningCamera();
         return true;
     }
 
+    /**
+     * 1.打开摄像头, 在CameraDevice.StateCallback回调中获取到CameraDevice对象, 并调用预览
+     */
+    @SuppressLint("MissingPermission")
     private void startOpeningCamera() {
-
+        try {
+            mCameraManager.openCamera(mCameraId, mCameraDeviceCallback, null);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
     }
 
+    /**
+     * 3.准备ImageReader
+     */
     private void prepareImageReader() {
-
+        if (mImageReader != null) {
+            mImageReader.close();
+        }
+        //获取支持该比例的最大宽高
+        Size largest = mPictureSizes.sizes(mAspectRatio).last();
+        //获取ImageReader
+        mImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(), ImageFormat.JPEG, 2);
+        //注册当ImageReader获取到新图像时的监听
+        mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, null);
     }
 
+    /**
+     * 2. 手机摄像头相关信息
+     */
     private void collectCameraInfo() {
+        //CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP:
+        //Format;Size;Hardware Level;Notes
+        // 该相机设备支持的可用流配置Format;还包括最小帧持续时间和每个格式/大小组合的延迟时间。
         StreamConfigurationMap map = mCameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         if (map == null) {
             throw new IllegalStateException("Failed to get configuration map:" + mCameraId);
@@ -339,18 +459,22 @@ public class Camera2 extends BaseCameraViewImpl {
         for (android.util.Size size : map.getOutputSizes(mCameraPreview.getOutputClass())) {
             int width = size.getWidth();
             int height = size.getHeight();
-            if (width <= MAX_PREVIEW_WIDTH && height < MAX_PREVIEW_HEIGHT) {
+            if (width <= MAX_PREVIEW_WIDTH && height <= MAX_PREVIEW_HEIGHT) {
                 mPreviewSizes.add(new Size(width, height));
             }
 
             mPictureSizes.clear();
+            //手机图片的信息
             collectPictureSizes(mPictureSizes, map);
+
+            //保证图片比例和预览的比例一致
             for (AspectRatio ratio : mPreviewSizes.ratios()) {
-                if (!mPreviewSizes.ratios().contains(ratio)) {
+                if (!mPictureSizes.ratios().contains(ratio)) {
                     mPreviewSizes.remove(ratio);
                 }
             }
 
+            //如果预览的比例不支持当前设置的比例, 自动获取支持比例中的第一个
             if (!mPreviewSizes.ratios().contains(mAspectRatio)) {
                 mAspectRatio = mPreviewSizes.ratios().iterator().next();
             }
@@ -358,12 +482,24 @@ public class Camera2 extends BaseCameraViewImpl {
 
     }
 
+    /**
+     * 2.1. 手机图片的信息
+     *
+     * @param pictureSizes
+     * @param map
+     */
     private void collectPictureSizes(SizeMap pictureSizes, StreamConfigurationMap map) {
         for (android.util.Size size : map.getOutputSizes(ImageFormat.JPEG)) {
             mPictureSizes.add(new Size(size.getWidth(), size.getHeight()));
         }
     }
 
+    /**
+     * 1.通过Facing选择CameraId, 并获得CameraCharacteristics摄像头特性对象,
+     * 获取到摄像头ID, 获取到摄像头的类型mFacing:前置,后置,外置
+     *
+     * @return
+     */
     private boolean chooseCameraIdByFacing() {
         int internalFacing = INTERNAL_FACINGS.get(mFacing);
         try {
@@ -372,11 +508,15 @@ public class Camera2 extends BaseCameraViewImpl {
                 throw new RuntimeException("No camera available");
             }
             for (String id : ids) {
+                //通过摄像头的ID获取对应摄像头的特性
                 CameraCharacteristics characteristics = mCameraManager.getCameraCharacteristics(id);
                 Integer level = characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+                //CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY: 向后兼容模式
                 if (level == null || level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY) {
                     continue;
                 }
+
+                //CameraCharacteristics.LENS_FACING: 相对于屏幕的摄像头
                 Integer internal = characteristics.get(CameraCharacteristics.LENS_FACING);
                 if (internal == null) {
                     throw new NullPointerException("Unexpected state: LENS_FACING null");
@@ -389,12 +529,12 @@ public class Camera2 extends BaseCameraViewImpl {
                 }
             }
 
+            // 没有找到设定的摄像头, 直接获取第一个摄像头ID
             mCameraId = ids[0];
             mCameraCharacteristics = mCameraManager.getCameraCharacteristics(mCameraId);
             Integer level = mCameraCharacteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
-            if (level == null ||
-                    level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY) {
-                return true;
+            if (level == null || level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY) {
+                return false;
             }
 
             Integer internal = mCameraCharacteristics.get(CameraCharacteristics.LENS_FACING);
@@ -402,6 +542,7 @@ public class Camera2 extends BaseCameraViewImpl {
                 throw new NullPointerException("Unexpected state: LENS_FACING null");
             }
 
+            //设置mFacing, 通过获取到摄像头
             for (int i = 0, count = INTERNAL_FACINGS.size(); i < count; i++) {
                 if (INTERNAL_FACINGS.valueAt(i) == internal) {
                     mFacing = INTERNAL_FACINGS.keyAt(i);
@@ -447,6 +588,7 @@ public class Camera2 extends BaseCameraViewImpl {
         }
         mFacing = facing;
         if (isCameraOpened()) {
+            //关闭摄像头,然后重新打开, 用于切换摄像头
             stop();
             start();
         }
@@ -469,11 +611,13 @@ public class Camera2 extends BaseCameraViewImpl {
             //TODO : Better error handling
             return false;
         }
+        //设置比例
         mAspectRatio = ratio;
         prepareImageReader();
         if (mCaptureSession != null) {
             mCaptureSession.close();
             mCaptureSession = null;
+            //重新开始预览
             startCaptureSession();
         }
         return true;
@@ -494,8 +638,8 @@ public class Camera2 extends BaseCameraViewImpl {
             updateAutoFocus();
             if (mCaptureSession != null) {
                 try {
+                    //开始预览
                     mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(), mPictureCaptureCallback, null);
-
                 } catch (CameraAccessException e) {
                     e.printStackTrace();
                     mAutoFocus = !mAutoFocus;
@@ -522,6 +666,7 @@ public class Camera2 extends BaseCameraViewImpl {
             updateFlash();
             if (mCaptureSession != null) {
                 try {
+                    //设置预览
                     mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(), mPictureCaptureCallback, null);
 
                 } catch (CameraAccessException e) {
@@ -546,10 +691,17 @@ public class Camera2 extends BaseCameraViewImpl {
         }
     }
 
+    /**
+     * Locks the focus as the first step for a still image capture
+     * 锁住焦点是拍照的第一步
+     */
     private void lockFocus() {
+        //AF: 自动对焦
+        //AE: 自动曝光
         mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
         mPictureCaptureCallback.setState(PictureCaptureCallback.STATE_LOCKING);
         try {
+            //拍照
             mCaptureSession.capture(mPreviewRequestBuilder.build(), mPictureCaptureCallback, null);
         } catch (CameraAccessException e) {
             e.printStackTrace();
@@ -587,7 +739,14 @@ public class Camera2 extends BaseCameraViewImpl {
             process(partialResult);
         }
 
+        @Override
+        public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
+            super.onCaptureCompleted(session, request, result);
+            process(result);
+        }
+
         private void process(CaptureResult result) {
+            //进行状态判断处理
             switch (mState) {
                 case STATE_LOCKING: {
                     Integer af = result.get(CaptureResult.CONTROL_AF_STATE);
